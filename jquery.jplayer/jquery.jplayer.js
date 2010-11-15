@@ -8,8 +8,8 @@
  *  - http://www.gnu.org/copyleft/gpl.html
  *
  * Author: Mark J Panaghiston
- * Version: 1.0.0b
- * Date: 2nd March 2010
+ * Version: 1.2.0
+ * Date: 11th July 2010
  */
 
 (function($) {
@@ -71,6 +71,7 @@
 		volume: 80,
 		oggSupport: false,
 		nativeSupport: true,
+		preload: 'none',
 		customCssIds: false,
 		graphicsFix: true,
 		errorAlerts: false,
@@ -85,8 +86,13 @@
 	};
 
 	$.jPlayer._config = {
+		version: "1.2.0",
+		swfVersionRequired: "1.2.0",
+		swfVersion: "unknown",
 		jPlayerControllerId: undefined,
-		isWaitingForPlay:false
+		delayedCommandId: undefined,
+		isWaitingForPlay:false,
+		isFileSet:false
 	};
 
 	$.jPlayer._diag = {
@@ -156,29 +162,29 @@
 				fid: this.config.cssPrefix + "_flash_" + $.jPlayer.count,
 				aid: this.config.cssPrefix + "_audio_" + $.jPlayer.count,
 				hid: this.config.cssPrefix + "_force_" + $.jPlayer.count,
-				i: $.jPlayer.count
+				i: $.jPlayer.count,
+				volume: this._limitValue(this.config.volume, 0, 100),
+				autobuffer: this.config.preload != 'none'
 			});
 
 			$.jPlayer.count++;
 
 			if(this.config.ready != undefined) {
 				if($.isFunction(this.config.ready)) {
-					this.jPlayerReady = this.config.ready;
+					this.jPlayerReadyCustom = this.config.ready;
 				} else {
 					this._warning("Constructor's ready option is not a function.");
 				}
 			}
 			
-			this.element.prepend('<audio id="' + this.config.aid + '"></audio>'); // Begin check for HTML5 <audio>
+			this.config.audio = document.createElement('audio');
+			this.config.audio.id = this.config.aid;
+			// The audio element is added to the page further down with the defaults.
+			
 			$.extend(this.config, {
+				canPlayMP3: !!((this.config.audio.canPlayType) ? (("" != this.config.audio.canPlayType("audio/mpeg")) && ("no" != this.config.audio.canPlayType("audio/mpeg"))) : false),
+				canPlayOGG: !!((this.config.audio.canPlayType) ? (("" != this.config.audio.canPlayType("audio/ogg")) && ("no" != this.config.audio.canPlayType("audio/ogg"))) : false),
 				aSel: $("#" + this.config.aid)
-			});			
-			var audioArray = this.config.aSel.get();
-
-			$.extend(this.config, {
-				canPlayMP3: !!((audioArray[0].canPlayType) ? (("" != audioArray[0].canPlayType("audio/mpeg")) && ("no" != audioArray[0].canPlayType("audio/mpeg"))) : false),
-				canPlayOGG: !!((audioArray[0].canPlayType) ? (("" != audioArray[0].canPlayType("audio/ogg")) && ("no" != audioArray[0].canPlayType("audio/ogg"))) : false),
-				audio: audioArray[0]
 			});
 
 			$.extend(this.config, {
@@ -213,9 +219,25 @@
 				setFile: function(e, mp3, ogg) {
 					try {
 						self._getMovie().fl_setFile_mp3(mp3);
+						if(self.config.autobuffer) {
+							element.trigger("jPlayer.load");
+						}
 						self.config.diag.src = mp3;
-						self.config.isWaitingForPlay = true;
+						self.config.isFileSet = true; // Set here for conformity, but the flash handles this internally and through return values.
 						element.trigger("jPlayer.setButtons", false);
+					} catch(err) { self._flashError(err); }
+				},
+				clearFile: function(e) {
+					try {
+						element.trigger("jPlayer.setButtons", false); // Before flash method so states correct for when onProgressChange is called
+						self._getMovie().fl_clearFile_mp3();
+						self.config.diag.src = "";
+						self.config.isFileSet = false;
+					} catch(err) { self._flashError(err); }
+				},
+				load: function(e) {
+					try {
+						self._getMovie().fl_load_mp3();
 					} catch(err) { self._flashError(err); }
 				},
 				play: function(e) {
@@ -263,71 +285,126 @@
 
 			var eventsForHtmlAudio = {
 				setFile: function(e, mp3, ogg) {
-					self.config.aSel.remove();
-					element.prepend('<audio id="' + self.config.aid + '"></audio>');
-					self.config.aSel = $("#"+self.config.aid)
-					var audioArray = self.config.aSel.get();
-					self.config.audio = audioArray[0];
 					if(self.config.usingMP3) {
 						self.config.diag.src = mp3;
 					} else { 
 						self.config.diag.src = ogg;
 					}
-					self.config.isWaitingForPlay = true;
-					element.trigger("jPlayer.setButtons", false);
+					if(self.config.isFileSet  && !self.config.isWaitingForPlay) {
+						element.trigger("jPlayer.pause");
+					}
+					self.config.audio.autobuffer = self.config.autobuffer; // In case not preloading, but used a jPlayer("load")
+					self.config.audio.preload = self.config.preload; // In case not preloading, but used a jPlayer("load")
+					if(self.config.autobuffer) {
+						self.config.audio.src = self.config.diag.src;
+						self.config.audio.load();
+					} else {
+						self.config.isWaitingForPlay = true;
+					}
+					self.config.isFileSet = true;
 					self.jPlayerOnProgressChange(0, 0, 0, 0, 0);
-					self.config.audio.addEventListener("canplay", function() {
-						self.config.audio.volume = self.config.volume/100; // Fix for Chrome 4: Event solves initial volume not being set correctly.
-					}, false);
+					clearInterval(self.config.jPlayerControllerId);
+					if(self.config.autobuffer) {
+						self.config.jPlayerControllerId = window.setInterval( function() {
+							self.jPlayerController(false);
+						}, 100);
+					}
+					clearInterval(self.config.delayedCommandId);
+				},
+				clearFile: function(e) {
+					self.setFile("","");
+					self.config.isWaitingForPlay = false;
+					self.config.isFileSet = false;
+				},
+				load: function(e) {
+					if(self.config.isFileSet) {
+						if(self.config.isWaitingForPlay) {
+							self.config.audio.autobuffer = true;
+							self.config.audio.preload = 'auto';
+							self.config.audio.src = self.config.diag.src;
+							self.config.audio.load();
+							self.config.isWaitingForPlay = false;
+							clearInterval(self.config.jPlayerControllerId);
+							self.config.jPlayerControllerId = window.setInterval( function() {
+								self.jPlayerController(false);
+							}, 100);
+						}
+					}
 				},
 				play: function(e) {
-					if(self.config.isWaitingForPlay) {
-						self.config.audio.src = self.config.diag.src;
-					}
-					self.config.audio.play();
-					element.trigger("jPlayer.setButtons", true);
-					clearInterval(self.config.jPlayerControllerId);
-					self.config.jPlayerControllerId = window.setInterval( function() {
-						self.jPlayerController(false);
-					}, 100);
-				},
-				pause: function(e) {
-					self.config.audio.pause();
-					element.trigger("jPlayer.setButtons", false);
-				},
-				stop: function(e) {
-					try {
-						self.config.audio.currentTime = 0;
-						element.trigger("jPlayer.pause");
+					if(self.config.isFileSet) {
+						if(self.config.isWaitingForPlay) {
+							self.config.audio.src = self.config.diag.src;
+							self.config.audio.load();
+						}
+						self.config.audio.play();
+						element.trigger("jPlayer.setButtons", true);
 						clearInterval(self.config.jPlayerControllerId);
 						self.config.jPlayerControllerId = window.setInterval( function() {
-							self.jPlayerController(true); // With override true
+							self.jPlayerController(false);
 						}, 100);
-						
-					} catch(err) {
-						window.setTimeout(function() {
-							self.stop();
-						}, 100);
+						clearInterval(self.config.delayedCommandId);
+					}
+				},
+				pause: function(e) {
+					if(self.config.isFileSet) {
+						self.config.audio.pause();
+						element.trigger("jPlayer.setButtons", false);
+						clearInterval(self.config.delayedCommandId);
+					}
+				},
+				stop: function(e) {
+					if(self.config.isFileSet) {
+						try {
+							element.trigger("jPlayer.pause");
+							self.config.audio.currentTime = 0;
+							clearInterval(self.config.jPlayerControllerId);
+							self.config.jPlayerControllerId = window.setInterval( function() {
+								self.jPlayerController(true); // With override true
+							}, 100);
+
+						} catch(err) {
+							clearInterval(self.config.delayedCommandId);
+							self.config.delayedCommandId = window.setTimeout(function() {
+								self.stop();
+							}, 100);
+						}
 					}
 				},
 				playHead: function(e, p) {
-					try {
-						self.config.audio.currentTime = (self.config.audio.buffered) ? p * self.config.audio.buffered.end() / 100 : p * self.config.audio.duration / 100;
-						element.trigger("jPlayer.play");
-					} catch(err) {
-						window.setTimeout(function() {
-							self.playHead(p);
-						}, 100);
+					if(self.config.isFileSet) {
+						try {
+							element.trigger("jPlayer.load");
+							if((typeof self.config.audio.buffered == "object") && (self.config.audio.buffered.length > 0)) {
+								self.config.audio.currentTime = p * self.config.audio.buffered.end(self.config.audio.buffered.length-1) / 100;
+							} else if(self.config.audio.duration > 0 && !isNaN(self.config.audio.duration)) {
+								self.config.audio.currentTime = p * self.config.audio.duration / 100;
+							} else {
+								throw "e";
+							}
+							element.trigger("jPlayer.play");
+						} catch(err) {
+							element.trigger("jPlayer.play"); // Fixes a problem on the iPad with multiple instances
+							element.trigger("jPlayer.pause"); // Also clears delayedCommandId interval.
+							self.config.delayedCommandId = window.setTimeout(function() {
+								self.playHead(p);
+							}, 100);
+						}
 					}
 				},
 				playHeadTime: function(e, t) {
-					try {
-						self.config.audio.currentTime = t/1000;
-						element.trigger("jPlayer.play");
-					} catch(err) {
-						window.setTimeout(function() {
-							self.playHeadTime(t);
-						}, 100);
+					if(self.config.isFileSet) {
+						try {
+							element.trigger("jPlayer.load");
+							self.config.audio.currentTime = t/1000;
+							element.trigger("jPlayer.play");
+						} catch(err) {
+							element.trigger("jPlayer.play"); // Fixes a problem on the iPad with multiple instances
+							element.trigger("jPlayer.pause"); // Also clears delayedCommandId interval.
+							self.config.delayedCommandId = window.setTimeout(function() {
+								self.playHeadTime(t);
+							}, 100);
+						}
 					}
 				},
 				volume: function(e, v) {
@@ -383,6 +460,19 @@
 				} else {
 					this.element.html("<p>Flash 8 or above is not installed. <a href='http://get.adobe.com/flashplayer'>Get Flash!</a></p>");
 				}
+			} else {
+				this.config.audio.autobuffer = this.config.autobuffer;
+				this.config.audio.preload = this.config.preload;
+				this.config.audio.addEventListener("canplay", function() {
+					var rnd = 0.1 * Math.random(); // Fix for Chrome 4: Fix volume being set multiple times before playing bug.
+					var fix = (self.config.volume < 50) ? rnd : -rnd; // Fix for Chrome 4: Solves volume change before play bug. (When new vol == old vol Chrome 4 does nothing!)
+					self.config.audio.volume = (self.config.volume + fix)/100; // Fix for Chrome 4: Event solves initial volume not being set correctly.
+				}, false);
+				this.config.audio.addEventListener("ended", function() {
+					clearInterval(self.config.jPlayerControllerId);
+					self.jPlayerOnSoundComplete();
+				}, false);
+				this.element.append(this.config.audio);
 			}
 
 			this.element.css({'position':this.config.position, 'top':this.config.top, 'left':this.config.left});
@@ -411,11 +501,28 @@
 				}, 100);
 			}
 		},
-		jPlayerReady: function() { // Called from Flash / HTML5 interval
+		jPlayerReady: function(swfVersion) { // Called from Flash / HTML5 interval
+			if(this.config.usingFlash) {
+				this.config.swfVersion = swfVersion;
+				if(this.config.swfVersionRequired != this.config.swfVersion) {
+					this._error("jPlayer's JavaScript / SWF version mismatch!\n\nJavaScript requires SWF : " + this.config.swfVersionRequired + "\nThe Jplayer.swf used is : " + this.config.swfVersion);
+				}
+			} else {
+				this.config.swfVersion = "n/a";
+			}
+			this.jPlayerReadyCustom();
+		},
+		jPlayerReadyCustom: function() {
 			// Replaced by ready function from options in _init()
 		},
 		setFile: function(mp3, ogg) {
 			this.element.trigger("jPlayer.setFile", [mp3, ogg]);
+		},
+		clearFile: function() {
+			this.element.trigger("jPlayer.clearFile");
+		},
+		load: function() {
+			this.element.trigger("jPlayer.load");
 		},
 		play: function() {
 			this.element.trigger("jPlayer.play");
@@ -433,6 +540,7 @@
 			this.element.trigger("jPlayer.playHeadTime", [t]);
 		},
 		volume: function(v) {
+			v = this._limitValue(v, 0, 100);
 			this.element.trigger("jPlayer.volume", [v]);
 		},
 		cssId: function(fn, id) {
@@ -446,12 +554,19 @@
 					this.config.cssSelector[fn] = $("#"+id);
 					this.config.clickHandler[fn] = function(e) {
 						self[fn](e);
+						$(this).blur();
 						return false;
 					}
 					this.config.cssSelector[fn].click(this.config.clickHandler[fn]);
-					this.config.cssDisplay[fn] = this.config.cssSelector[fn].css("display");
-					if(fn == "pause") {
-						this.config.cssSelector[fn].css("display", "none");
+					var display = this.config.cssSelector[fn].css("display");
+					if(fn == "play") {
+						this.config.cssDisplay["pause"] = display;
+					}
+					if(!(fn == "pause" && display == "none")) {
+						this.config.cssDisplay[fn] = display;
+						if(fn == "pause") {
+							this.config.cssSelector[fn].css("display", "none");
+						}
 					}
 				} else {
 					this._warning("Unknown/Illegal function in cssId\n\njPlayer('cssId', '"+fn+"', '"+id+"')");
@@ -506,14 +621,16 @@
 				tt = this.config.audio.duration * 1000; // milliSeconds
 				tt = isNaN(tt) ? 0 : tt; // Clean up duration in Firefox 3.5+
 				ppa = (tt > 0) ? 100 * pt / tt : 0;
-				lp = (this.config.audio.buffered) ? 100 * this.config.audio.buffered.end() / this.config.audio.duration : 100;
-				ppr = (this.config.audio.buffered) ? 100 * this.config.audio.currentTime / this.config.audio.buffered.end() : ppa;
+				if((typeof this.config.audio.buffered == "object") && (this.config.audio.buffered.length > 0)) {
+					lp = 100 * this.config.audio.buffered.end(this.config.audio.buffered.length-1) / this.config.audio.duration;
+					ppr = 100 * this.config.audio.currentTime / this.config.audio.buffered.end(this.config.audio.buffered.length-1);
+				} else {
+					lp = 100;
+					ppr = ppa;
+				}
 			}
 
-			if (this.config.audio.ended) {
-				clearInterval(this.config.jPlayerControllerId);
-				this.jPlayerOnSoundComplete();
-			} else if(!this.config.diag.isPlaying && lp >= 100) {
+			if(!this.config.diag.isPlaying && lp >= 100) {
 				clearInterval(this.config.jPlayerControllerId);
 			}
 			
@@ -607,6 +724,9 @@
 				this.config.hSel.text(""+Math.random());
 			}
 		},
+		_limitValue: function(value, min, max) {
+			return (value < min) ? min : ((value > max) ? max : value);
+		},
 		_flashError: function(e) {
 			this._error("Problem with Flash component.\n\nCheck the swfPath points at the Jplayer.swf path.\n\nswfPath = " + this.config.swfPath + "\nurl: " + this.config.swf + "\n\nError: " + e.message);
 		},
@@ -621,7 +741,7 @@
 			}
 		},
 		_alert: function(msg) {
-			alert("jPlayer : id='" + this.config.id +"' : " + msg);
+			alert("jPlayer " + this.config.version + " : id='" + this.config.id +"' : " + msg);
 		}
 	};
 })(jQuery);

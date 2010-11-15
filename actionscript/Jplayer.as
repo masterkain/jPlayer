@@ -8,8 +8,8 @@
  *  - http://www.gnu.org/copyleft/gpl.html
  *
  * Author: Mark J Panaghiston
- * Version: 1.0.0
- * Date: 18th February 2010
+ * Version: 1.2.0
+ * Date: 11th July 2010
  *
  * FlashVars expected:
  *	id:	(URL Encoded) Id of container <div> tag of Flash
@@ -17,7 +17,7 @@
  *	vol:	(Number) Sets the initial volume
  *
  * MTASC Compiler:
- * mtasc Jplayer.as -swf Jplayer.swf -main -header 0:0:40 -v -version 8 -group
+ * mtasc Jplayer.as -swf Jplayer.swf -main -header 120:20:40 -v -version 8 -group
  */
 
 import flash.external.ExternalInterface;
@@ -25,6 +25,9 @@ import flash.external.ExternalInterface;
 class Jplayer {
 	
 	static var app:Jplayer;
+
+	private var jPlayerVersion:String = "1.2.0";
+	private var txVersion:TextField;
 	
 	private var mySound:Sound;
 	private var jQuery:String;
@@ -50,9 +53,20 @@ class Jplayer {
 	private var progressBroker_id:Number;
 	
 	function Jplayer( scope:MovieClip ) {
+		System.security.allowDomain("*");
 		scope._soundbuftime = 0;
 		this.jQuery = "jQuery(\"#" + scope.id + "\").jPlayer";
 		this.vol = Number(scope.vol);
+		
+		// Display the jPlayer version so the SWF may be viewed directly to confirm that the JavaScript and SWF versions are compatible.
+		var txFormat:TextFormat = new TextFormat();
+		txFormat.align = "center";
+		this.txVersion = scope.createTextField("txVersion", scope.getNextHighestDepth(), 0, 0, 120, 20);
+		this.txVersion.border = true;
+		this.txVersion.background = true;
+		this.txVersion.backgroundColor = 0xEEEEFF;
+		this.txVersion.text = "jPlayer " + this.jPlayerVersion;
+		this.txVersion.setTextFormat(txFormat);
 		
 		// Delay init() because Firefox 3.5.7+ developed a bug with local testing.
 		clearInterval(this.init_id);
@@ -61,8 +75,10 @@ class Jplayer {
 	
 	function init():Void {
 		clearInterval(this.init_id);
-		
+
 		ExternalInterface.addCallback("fl_setFile_mp3", this, this.setFile_mp3);
+		ExternalInterface.addCallback("fl_clearFile_mp3", this, this.clearFile_mp3);
+		ExternalInterface.addCallback("fl_load_mp3", this, this.load_mp3);
 		ExternalInterface.addCallback("fl_play_mp3", this, this.play_mp3);
 		ExternalInterface.addCallback("fl_pause_mp3", this, this.pause_mp3);
 		ExternalInterface.addCallback("fl_stop_mp3", this, this.stop_mp3);
@@ -71,7 +87,7 @@ class Jplayer {
 		ExternalInterface.addCallback("fl_volume_mp3", this, this.volume_mp3);
 
 		ExternalInterface.call(this.jQuery, "jPlayerVolume", this.vol);
-		ExternalInterface.call(this.jQuery, "jPlayerReady");
+		ExternalInterface.call(this.jQuery, "jPlayerReady", this.jPlayerVersion);
 	}
 	
 	function newMP3( f:String ):Void {
@@ -103,7 +119,12 @@ class Jplayer {
 		}
 	}
 	
-	function play_mp3():Boolean {
+	function clearFile_mp3():Void {
+		this.setFile_mp3("");
+		this.isReady = false;
+	}
+	
+	function load_mp3():Boolean {
 		if (this.isReady && !this.isLoading && !this.isLoaded) {
 			this.mySound.loadSound(this.filename, true); // Autoplays when streaming!
 			this.mySound.setVolume(this.vol); // Has to go here, after loadSound(), otherwise a zero screws thing up.
@@ -115,8 +136,16 @@ class Jplayer {
 			this.isLoading = true;
 			
 			clearInterval(this.progressBroker_id);
-			clearInterval(this.bufferProgress_id);
 			this.progressBroker_id = setInterval(this, "progressBroker", 100);
+			return true;
+		} else {
+			return false;
+		}
+	}
+	
+	function play_mp3():Boolean {
+		if (this.load_mp3()) {
+			clearInterval(this.bufferProgress_id);
 			this.bufferProgress_id = setInterval(this, "bufferProgress", 100);
 			return true;
 		
@@ -191,7 +220,6 @@ class Jplayer {
 		var playedTime:Number = (this.isPlaying) ? this.mySound.position : this.playPosition;
 		var timeRelativeBuffer:Number = (this.mySound.duration - playedTime) / 1000;
 
-		var jsResponse:String = "n/a";
 		if (load_complete || timeRelativeBuffer > this.timeBufferMP3 || (this.isNewPlayHead && timeRelativeBuffer > this.timeBufferMP3_min)) {
 			if (!this.isPlaying) {
 				// Start playing!
